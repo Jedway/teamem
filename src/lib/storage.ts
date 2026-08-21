@@ -4,15 +4,21 @@ import path from "node:path";
 import { INITIAL_TEA_PRODUCTS } from "./seed-data";
 import { deriveItemStatus, type Item, type Order } from "./types";
 
-const DATA_DIR = path.resolve(process.cwd(), ".data");
+const isServerless = Boolean(
+	process.env.VERCEL ||
+		process.env.AWS_LAMBDA_FUNCTION_NAME ||
+		process.env.NOW_REGION,
+);
+
+const DATA_DIR = isServerless
+	? path.resolve("/tmp", ".data")
+	: path.resolve(process.cwd(), ".data");
+
 const INVENTORY_FILE = path.join(DATA_DIR, "inventory.json");
 const ORDERS_FILE = path.join(DATA_DIR, "orders.json");
 
 function shouldUseBlob(): boolean {
-	return Boolean(
-		process.env.BLOB_READ_WRITE_TOKEN &&
-			(process.env.VERCEL || process.env.USE_VERCEL_BLOB === "true"),
-	);
+	return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 }
 
 async function ensureLocalDataDir() {
@@ -25,32 +31,41 @@ async function ensureLocalDataDir() {
 // Vercel Blob Helpers
 // ---------------------------------------------------------------------------
 async function readJsonFromBlob<T>(filename: string): Promise<T | null> {
-	const { list } = await import("@vercel/blob");
-	const response = await list({ prefix: filename });
-	const match = response.blobs.find((b) => b.pathname === filename);
-	if (!match) return null;
+	try {
+		const { list } = await import("@vercel/blob");
+		const response = await list({ prefix: filename });
+		const match = response.blobs.find((b) => b.pathname === filename);
+		if (!match) return null;
 
-	const res = await fetch(match.url, { cache: "no-store" });
-	if (!res.ok) return null;
-	return (await res.json()) as T;
+		const res = await fetch(match.url, { cache: "no-store" });
+		if (!res.ok) return null;
+		return (await res.json()) as T;
+	} catch (error) {
+		console.error(`Error reading ${filename} from Vercel Blob:`, error);
+		return null;
+	}
 }
 
 async function writeJsonToBlob<T>(filename: string, data: T): Promise<void> {
-	const { put } = await import("@vercel/blob");
-	await put(filename, JSON.stringify(data, null, 2), {
-		access: "public",
-		addRandomSuffix: false,
-		contentType: "application/json",
-	});
+	try {
+		const { put } = await import("@vercel/blob");
+		await put(filename, JSON.stringify(data, null, 2), {
+			access: "public",
+			addRandomSuffix: false,
+			contentType: "application/json",
+		});
+	} catch (error) {
+		console.error(`Error writing ${filename} to Vercel Blob:`, error);
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Local Filesystem Helpers
 // ---------------------------------------------------------------------------
 async function readJsonFromLocal<T>(filePath: string): Promise<T | null> {
-	await ensureLocalDataDir();
-	if (!existsSync(filePath)) return null;
 	try {
+		await ensureLocalDataDir();
+		if (!existsSync(filePath)) return null;
 		const raw = await fs.readFile(filePath, "utf-8");
 		return JSON.parse(raw) as T;
 	} catch (error) {
@@ -60,8 +75,12 @@ async function readJsonFromLocal<T>(filePath: string): Promise<T | null> {
 }
 
 async function writeJsonToLocal<T>(filePath: string, data: T): Promise<void> {
-	await ensureLocalDataDir();
-	await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+	try {
+		await ensureLocalDataDir();
+		await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+	} catch (error) {
+		console.error(`Error writing ${filePath}:`, error);
+	}
 }
 
 // ---------------------------------------------------------------------------
